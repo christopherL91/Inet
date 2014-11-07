@@ -44,12 +44,13 @@ const (
 
 type (
 	Client struct {
-		//channel for commands from user.
+		// Channel for commands from user.
 		inputCh chan string
-		//channel for messages to server.
+		// Channel for messages to server.
 		writeCh chan *Protocol.Message
-		//holds the incoming menu
-		menu  *Protocol.MenuData
+		// Holds the incoming menu
+		menu *Protocol.MenuData
+		// Simple mutex for menu
 		mutex *sync.Mutex
 	}
 )
@@ -69,15 +70,15 @@ func newClient() *Client {
 
 func main() {
 	client := newClient()
-	//dial server and get connection. 30s timeout is set.
+	// Dial server and get connection. 30s timeout is set.
 	conn, err := net.DialTimeout("tcp", address, 30*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
-	//close connection before exiting program.
+	// Close connection before exiting program.
 	defer conn.Close()
 	log.Printf("You are connected to the server at %s", address)
-	//read from stdin all the time.
+	// Read from stdin all the time.
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
@@ -89,7 +90,7 @@ func main() {
 			client.inputCh <- line
 		}
 	}()
-	//start listening on incoming messages
+	// Start listening on incoming messages
 	client.start(conn)
 }
 

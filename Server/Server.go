@@ -39,23 +39,23 @@ import (
 
 type (
 	Server struct {
-		//a simple mutex for the maps.
+		// A simple mutex for the maps.
 		mutex *sync.Mutex
-		//only a list of connections, the key is nothing.
+		// Only a list of connections, the key is nothing.
 		connections map[net.Conn]struct{}
-		//connection => cardnumber
+		// Connection => cardnumber
 		clients map[net.Conn]int64
-		//channel for sending messages through
+		// Channel for sending messages through
 		messageCh chan *Protocol.Message
-		//channel for sending menus through
+		// Channel for sending menus through
 		menuCh chan *Protocol.Menu
-		//channel for commands from user (stdin)
+		// Channel for commands from user (stdin)
 		inputCh chan string
 	}
 )
 
 const (
-	//address to server
+	// Address to server
 	address = "localhost:3000"
 )
 
@@ -74,7 +74,7 @@ func newServer() *Server {
 	}
 }
 
-//This function distributes all the messages/menus to the clients
+// This function distributes all the messages/menus to the clients
 func (s *Server) distributor() {
 	for {
 		select {
@@ -83,18 +83,16 @@ func (s *Server) distributor() {
 			s.mutex.Lock()
 			for conn, _ := range s.connections {
 				if err := binary.Write(conn, binary.LittleEndian, message); err != nil {
-					println("hello")
 					log.Println(err)
 					return
 				}
 			}
 			s.mutex.Unlock()
-		case menu := <-s.menuCh: //distribute the 10 bytes to all the connections.
+		case menu := <-s.menuCh: // Distribute the 10 bytes to all the connections.
 			log.Println(menu)
 			s.mutex.Lock()
 			for conn, _ := range s.connections {
 				if err := binary.Write(conn, binary.LittleEndian, menu); err != nil {
-					println("world")
 					log.Println(err)
 					return
 				}
@@ -104,7 +102,7 @@ func (s *Server) distributor() {
 	}
 }
 
-//remove disconnecting user.
+// Remove disconnecting user.
 func (s *Server) removeConnection(conn net.Conn) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -112,7 +110,7 @@ func (s *Server) removeConnection(conn net.Conn) {
 	log.Printf("Number of connections:%d", len(s.connections))
 }
 
-//add new connection to list of connections.
+// Add new connection to list of connections.
 func (s *Server) addConnection(conn net.Conn) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -120,13 +118,12 @@ func (s *Server) addConnection(conn net.Conn) {
 	log.Printf("Number of connections:%d", len(s.connections))
 }
 
-//read input from command line
+// Read input from command line
 func (s *Server) readInput() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			println("foo")
 			log.Println(err)
 		}
 		line = strings.TrimSpace(line)
@@ -137,7 +134,7 @@ func (s *Server) readInput() {
 	}
 }
 
-//starts the actual server services.
+// Starts the actual server services.
 func (s *Server) start() {
 	go s.distributor()
 	go s.readInput()
@@ -146,27 +143,25 @@ func (s *Server) start() {
 func main() {
 	server := newServer()
 	go server.start()
-	//start listening on address.
+	// Start listening on address.
 	l, err := net.Listen("tcp", address)
 	if err != nil {
-		println("bar")
 		log.Fatal(err)
 	}
 	defer l.Close()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			println("foobar")
 			log.Println(err)
 			continue
 		}
-		//add a connection to the map of connections.
+		// Add a connection to the map of connections.
 		server.addConnection(conn)
 		go server.clientHandler(conn)
 	}
 }
 
-//take care of the client.
+// Take care of the client.
 func (s *Server) clientHandler(conn net.Conn) {
 	defer s.removeConnection(conn)
 	defer conn.Close()
@@ -185,13 +180,12 @@ func (s *Server) read(conn net.Conn) {
 			return
 		}
 		log.Printf("Message code:%d", code[0])
-		//check message code
+		// Check message code
 		switch code[0] {
 		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode:
 			message := new(Protocol.Message)
 			err := binary.Read(reader, binary.LittleEndian, message)
 			if err != nil {
-				println("jonas")
 				log.Println(err)
 				return
 			}
@@ -215,22 +209,22 @@ func (s *Server) write(conn net.Conn) {
 			if err != nil {
 				panic(err)
 			}
-			//create new buffer with the file as content.
+			// Create new buffer with the file as content.
 			json_data := bytes.NewBuffer(file)
-			//add zero to end of buffer, for client to know when to stop reading.
+			// Add zero to end of buffer, for client to know when to stop reading.
 			json_data.WriteByte(0)
 			for {
 				buffer := make([]byte, 9)
-				//fill buffer with 9 bytes at a time.
+				// Fill buffer with 9 bytes at a time.
 				_, err := json_data.Read(buffer)
 				if err == io.EOF {
 					break
 				}
-				//create a fixed slice for the message.
+				// Create a fixed slice for the message.
 				var fixed_slice [9]byte
-				//copy content to fixed_slice
+				// Copy content to fixed_slice
 				copy(fixed_slice[:], buffer)
-				//send menu to distributor
+				// Send menu to distributor
 				s.menuCh <- &Protocol.Menu{Code: Protocol.Menucode, Payload: fixed_slice}
 			}
 		default:
