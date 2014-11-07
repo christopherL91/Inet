@@ -1,4 +1,19 @@
 {
-	"title":"Unicorn bank!",
-	"version":"1.0"
+	"version":"1.0",
+	"swedish": [
+		{
+			"title":"GoBank. Banken för dig med Go!"
+		},
+		{
+			"banner":"Just nu 20% på ditt nästa stora lån"
+		}
+	],
+	"english": [
+		{
+			"title":"GoBank, because you're worth it"
+		},
+		{
+			"banner":"20% of your next big loan"
+		}
+	]
 }

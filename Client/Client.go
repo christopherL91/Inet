@@ -27,10 +27,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"flag"
 	"github.com/christopherL91/Progp-Inet/Protocol"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -42,10 +40,6 @@ import (
 
 const (
 	address = "localhost:3000"
-)
-
-var (
-	debug bool
 )
 
 type (
@@ -61,8 +55,6 @@ type (
 )
 
 func init() {
-	flag.BoolVar(&debug, "debug", false, "debug information")
-	flag.Parse()
 	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
@@ -77,11 +69,6 @@ func newClient() *Client {
 
 func main() {
 	client := newClient()
-	if err := client.loadMenuFromFile(); err != nil {
-		if debug {
-			log.Println("Menu from file could not be found.", err.Error())
-		}
-	}
 	//dial server and get connection. 30s timeout is set.
 	conn, err := net.DialTimeout("tcp", address, 30*time.Second)
 	if err != nil {
@@ -89,41 +76,44 @@ func main() {
 	}
 	//close connection before exiting program.
 	defer conn.Close()
-
-	//start listening on incoming messages
-	go client.start(conn)
-
-	log.Println("You are connected to the server")
-
+	log.Printf("You are connected to the server at %s", address)
 	//read from stdin all the time.
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		line, _ := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			line, _ := reader.ReadString('\n')
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			client.inputCh <- line
 		}
-		client.inputCh <- line
-	}
+	}()
+	//start listening on incoming messages
+	client.start(conn)
 }
 
+// Start the basic client services.
 func (c *Client) start(conn net.Conn) {
-	go c.read(conn)
 	go c.write(conn)
+	// Blocking until server disconnects.
+	c.read(conn)
 }
 
+// Start listening on messages from server.
 func (c *Client) read(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	var menu_data bytes.Buffer
 	for {
 		code, err := reader.Peek(1)
-		if err != nil {
-			log.Println(err)
+		if err == io.EOF {
+			log.Println("Server disconnected")
 			return
 		} else if err == io.EOF {
 			log.Fatalln("Server disconnected")
 		}
-		//check message code
+		log.Printf("Message code:%d", code[0])
+		// Check message code
 		switch code[0] {
 		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode:
 			message := new(Protocol.Message)
@@ -132,15 +122,13 @@ func (c *Client) read(conn net.Conn) {
 				log.Println(err)
 				return
 			}
-			if debug {
-				log.Println(message)
-			}
+			log.Printf("Message from server:%v", message)
 		case Protocol.Menucode:
 			menu_buffer := make([]byte, 10)
 			size, _ := reader.Read(menu_buffer)
 			menu := new(Protocol.MenuData)
 			if menu_buffer[size-1] == 0 {
-				//remove all zeros from the message.
+				// Remove all zeros from the message.
 				msg := bytes.TrimRightFunc(menu_buffer[1:size-1], func(x rune) bool {
 					return x == 0
 				})
@@ -150,20 +138,11 @@ func (c *Client) read(conn net.Conn) {
 					log.Println(err)
 					return
 				}
-				if err = ioutil.WriteFile("menu.json", menu_data.Bytes(), 0644); err != nil {
-					log.Println(err)
-					return
-				}
-				if debug {
-					log.Println("Wrote menu to file")
-				}
-				//reset buffer to default state.
+				// Reset buffer to default state.
 				menu_data.Reset()
-				//make new menu available to system.
+				// Make new menu available to system.
 				c.addMenu(menu)
-				if debug {
-					log.Println(menu)
-				}
+				log.Printf("Menu from server:%v", menu)
 			} else {
 				menu_data.Write(menu_buffer[1:size])
 			}
@@ -178,34 +157,34 @@ func (c *Client) write(conn net.Conn) {
 		switch <-c.inputCh {
 		case "send":
 			msg := &Protocol.Message{Code: Protocol.Balancecode, Payload: 3}
+			log.Printf("About to send this message:%v", msg)
 			if err := binary.Write(conn, binary.LittleEndian, msg); err != nil {
 				log.Println(err)
 				return
 			}
+		default:
+			log.Println("Unknown command")
 		}
 	}
 }
 
-//adds a new menu to the system.
+// Adds a new menu to the system.
 func (c *Client) addMenu(menu *Protocol.MenuData) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.menu = menu
-	if debug {
-		log.Println("Added new menu")
-	}
 }
 
-func (c *Client) loadMenuFromFile() error {
-	data, err := ioutil.ReadFile("menu.json")
-	if err != nil {
-		return err
-	}
-	menu := new(Protocol.MenuData)
-	err = json.Unmarshal(data, menu)
-	if err != nil {
-		return err
-	}
-	c.addMenu(menu)
-	return nil
-}
+// func (c *Client) loadMenuFromFile() error {
+// 	data, err := ioutil.ReadFile("menu.json")
+// 	if err != nil {
+// 		return err
+// 	}
+// 	menu := new(Protocol.MenuData)
+// 	err = json.Unmarshal(data, menu)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	c.addMenu(menu)
+// 	return nil
+// }

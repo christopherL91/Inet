@@ -26,7 +26,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"flag"
 	"github.com/christopherL91/Progp-Inet/Protocol"
 	"io"
 	"io/ioutil"
@@ -60,14 +59,7 @@ const (
 	address = "localhost:3000"
 )
 
-var (
-	//debug flag.
-	debug bool
-)
-
 func init() {
-	flag.BoolVar(&debug, "debug", false, "debug information")
-	flag.Parse()
 	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
@@ -87,24 +79,22 @@ func (s *Server) distributor() {
 	for {
 		select {
 		case message := <-s.messageCh:
-			if debug {
-				log.Println(message)
-			}
+			log.Println(message)
 			s.mutex.Lock()
 			for conn, _ := range s.connections {
 				if err := binary.Write(conn, binary.LittleEndian, message); err != nil {
+					println("hello")
 					log.Println(err)
 					return
 				}
 			}
 			s.mutex.Unlock()
 		case menu := <-s.menuCh: //distribute the 10 bytes to all the connections.
-			if debug {
-				log.Println(menu)
-			}
+			log.Println(menu)
 			s.mutex.Lock()
 			for conn, _ := range s.connections {
 				if err := binary.Write(conn, binary.LittleEndian, menu); err != nil {
+					println("world")
 					log.Println(err)
 					return
 				}
@@ -119,9 +109,7 @@ func (s *Server) removeConnection(conn net.Conn) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	delete(s.connections, conn)
-	if debug {
-		log.Println("Number of clients", len(s.connections))
-	}
+	log.Printf("Number of connections:%d", len(s.connections))
 }
 
 //add new connection to list of connections.
@@ -129,16 +117,18 @@ func (s *Server) addConnection(conn net.Conn) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.connections[conn] = struct{}{}
-	if debug {
-		log.Println("Number of clients", len(s.connections))
-	}
+	log.Printf("Number of connections:%d", len(s.connections))
 }
 
 //read input from command line
 func (s *Server) readInput() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		line, _ := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			println("foo")
+			log.Println(err)
+		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -159,12 +149,14 @@ func main() {
 	//start listening on address.
 	l, err := net.Listen("tcp", address)
 	if err != nil {
+		println("bar")
 		log.Fatal(err)
 	}
 	defer l.Close()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			println("foobar")
 			log.Println(err)
 			continue
 		}
@@ -178,35 +170,32 @@ func main() {
 func (s *Server) clientHandler(conn net.Conn) {
 	defer s.removeConnection(conn)
 	defer conn.Close()
-	go s.read(conn)
-	s.write(conn)
+	go s.write(conn)
+	// Read is blocking until client disconnects.
+	s.read(conn)
 }
 
 func (s *Server) read(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	for {
 		code, err := reader.Peek(1)
-		if err != nil {
-			log.Println(err)
+		if err == io.EOF {
+			log.Printf("Client with IP %s disconnected", conn.RemoteAddr().String())
+			// Client is disconnecting, clean up.
 			return
 		}
-		if debug {
-			log.Println("Code:", code[0])
-		}
+		log.Printf("Message code:%d", code[0])
 		//check message code
 		switch code[0] {
 		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode:
 			message := new(Protocol.Message)
 			err := binary.Read(reader, binary.LittleEndian, message)
 			if err != nil {
+				println("jonas")
 				log.Println(err)
 				return
 			}
-			if debug {
-				log.Println(message)
-			}
-		case Protocol.RequestMenucode:
-			//TODO
+			log.Printf("Message from client:%v", message)
 		default:
 			log.Println("Something else")
 		}
@@ -228,9 +217,6 @@ func (s *Server) write(conn net.Conn) {
 			}
 			//create new buffer with the file as content.
 			json_data := bytes.NewBuffer(file)
-			if debug {
-				log.Println(json_data.String())
-			}
 			//add zero to end of buffer, for client to know when to stop reading.
 			json_data.WriteByte(0)
 			for {
