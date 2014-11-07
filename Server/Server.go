@@ -27,7 +27,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
-	"github.com/christopherL91/Protocol"
+	"github.com/christopherL91/Progp-Inet/Protocol"
 	"io"
 	"io/ioutil"
 	"log"
