@@ -1,19 +1,27 @@
 {
 	"version":"1.0",
-	"swedish": [
-		{
-			"title":"GoBank. Banken för dig med Go!"
-		},
-		{
-			"banner":"Just nu 20% på ditt nästa stora lån"
-		}
+	"languages": [
+		"swedish",
+		"english"
 	],
-	"english": [
-		{
-			"title":"GoBank, because you're worth it"
+	"text": {
+		"swedish": {
+			"title": "GoBank, banken för dig med go",
+			"banner": "Just nu 20% lägre ränta vid ditt första lån",
+			"initial_commands": {
+				"balance":"Kontrollera saldo",
+				"widthdraw":"Ta ut pengar",
+				"deposit":"Stoppa in pengar"
+			}
 		},
-		{
-			"banner":"20% of your next big loan"
+		"english": {
+			"title": "GoBank",
+			"banner": "something...",
+			"initial_commands": {
+				"balance": "Check balance",
+				"widthdraw": "Widthdraw",
+				"deposit": "deposit"
+			}
 		}
-	]
+	}
 }

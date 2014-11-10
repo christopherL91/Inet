@@ -26,6 +26,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"github.com/christopherL91/Progp-Inet/Protocol"
 	"io"
 	"io/ioutil"
@@ -54,12 +55,15 @@ type (
 	}
 )
 
-const (
-	// Address to server
-	address = "localhost:3000"
+var (
+	base string
+	port string
 )
 
 func init() {
+	flag.StringVar(&base, "address", "localhost", "The base address to start the server on")
+	flag.StringVar(&port, "port", "3000", "The port to start the server on")
+	flag.Parse()
 	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
@@ -72,6 +76,47 @@ func newServer() *Server {
 		messageCh:   make(chan *Protocol.Message, 10),
 		inputCh:     make(chan string, 10),
 	}
+}
+
+// Starts the actual server services.
+func (s *Server) start() {
+	go s.distributor()
+	go s.readInput()
+}
+
+func main() {
+	server := newServer()
+	go server.start()
+	// base:port
+	address := net.JoinHostPort(base, port)
+	// Start listening on address.
+	l, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer l.Close()
+	log.Println("Server started on", address)
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		server.addConnection(conn)
+		go server.clientHandler(conn)
+	}
+}
+
+// Take care of the client.
+func (s *Server) clientHandler(conn net.Conn) {
+	defer s.removeConnection(conn)
+	defer conn.Close()
+	go s.write(conn)
+	//send all the menus right now.
+	s.inputCh <- "menu"
+	// Read is blocking until client disconnects.
+	s.read(conn)
+	log.Printf("Client with IP %s disconnected", conn.RemoteAddr().String())
 }
 
 // This function distributes all the messages/menus to the clients
@@ -134,55 +179,17 @@ func (s *Server) readInput() {
 	}
 }
 
-// Starts the actual server services.
-func (s *Server) start() {
-	go s.distributor()
-	go s.readInput()
-}
-
-func main() {
-	server := newServer()
-	go server.start()
-	// Start listening on address.
-	l, err := net.Listen("tcp", address)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer l.Close()
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		// Add a connection to the map of connections.
-		server.addConnection(conn)
-		go server.clientHandler(conn)
-	}
-}
-
-// Take care of the client.
-func (s *Server) clientHandler(conn net.Conn) {
-	defer s.removeConnection(conn)
-	defer conn.Close()
-	go s.write(conn)
-	// Read is blocking until client disconnects.
-	s.read(conn)
-}
-
 func (s *Server) read(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	for {
 		code, err := reader.Peek(1)
 		if err == io.EOF {
-			log.Printf("Client with IP %s disconnected", conn.RemoteAddr().String())
-			// Client is disconnecting, clean up.
 			return
 		}
 		log.Printf("Message code:%d", code[0])
 		// Check message code
 		switch code[0] {
-		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode:
+		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode, Protocol.LoginCode:
 			message := new(Protocol.Message)
 			err := binary.Read(reader, binary.LittleEndian, message)
 			if err != nil {

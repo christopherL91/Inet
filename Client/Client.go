@@ -27,19 +27,18 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"github.com/christopherL91/Progp-Inet/Protocol"
 	"io"
 	"log"
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-)
-
-const (
-	address = "localhost:3000"
 )
 
 type (
@@ -51,29 +50,42 @@ type (
 		// Holds the incoming menu
 		menu *Protocol.MenuData
 		// Simple mutex for menu
-		mutex *sync.Mutex
+		mutex         *sync.Mutex
+		menuReadyChan chan struct{}
 	}
 )
 
+var (
+	base   string
+	port   string
+	prompt = "GoBank@ATM> "
+)
+
 func init() {
+	flag.StringVar(&base, "address", "localhost", "The base address to start the server on")
+	flag.StringVar(&port, "port", "3000", "The port to start the server on")
+	flag.Parse()
 	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
 func newClient() *Client {
 	return &Client{
-		inputCh: make(chan string, 10),
-		writeCh: make(chan *Protocol.Message, 10),
-		menu:    new(Protocol.MenuData),
-		mutex:   new(sync.Mutex),
+		inputCh:       make(chan string, 10),
+		writeCh:       make(chan *Protocol.Message, 10),
+		menu:          new(Protocol.MenuData),
+		mutex:         new(sync.Mutex),
+		menuReadyChan: make(chan struct{}),
 	}
 }
 
 func main() {
 	client := newClient()
+	// base:port
+	address := net.JoinHostPort(base, port)
 	// Dial server and get connection. 30s timeout is set.
 	conn, err := net.DialTimeout("tcp", address, 30*time.Second)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	// Close connection before exiting program.
 	defer conn.Close()
@@ -90,8 +102,34 @@ func main() {
 			client.inputCh <- line
 		}
 	}()
+	go client.handleUserInput()
 	// Start listening on incoming messages
 	client.start(conn)
+	log.Println("Server disconnected")
+}
+
+func (c *Client) handleUserInput() {
+	//	Blocking until new menu comes in...
+	<-c.menuReadyChan
+	//	Print out all the available languages
+	for _, language := range c.menu.Languages {
+		fmt.Println(language)
+	}
+	for {
+		fmt.Print(prompt)
+		language := <-c.inputCh
+		menu, ok := c.menu.Text[language]
+		if !ok {
+			fmt.Println("Invalid language")
+		} else {
+			fmt.Println()
+			c.login()
+			fmt.Println(menu.InitialCommands.Balance)
+			fmt.Println(menu.InitialCommands.Deposit)
+			fmt.Println(menu.InitialCommands.Widthdraw)
+			break
+		}
+	}
 }
 
 // Start the basic client services.
@@ -101,6 +139,34 @@ func (c *Client) start(conn net.Conn) {
 	c.read(conn)
 }
 
+func (c *Client) login() error {
+	var cardNum, passNum string
+	for {
+		fmt.Println("Input cardnumber")
+		fmt.Print(prompt)
+		cardNum = <-c.inputCh
+		fmt.Println("Input password")
+		fmt.Print(prompt)
+		passNum = <-c.inputCh
+		if Protocol.CardnumberTest.MatchString(cardNum) && Protocol.PassnumberTest.MatchString(passNum) {
+			break
+		} else {
+			fmt.Println("\nInvalid credentials. Please try again.")
+		}
+	}
+
+	//	Already tested through regex
+	card, _ := strconv.Atoi(cardNum)
+	pass, _ := strconv.Atoi(passNum)
+
+	c.writeCh <- &Protocol.Message{
+		Code:    Protocol.LoginCode,
+		Number:  uint16(card),
+		Payload: uint32(pass),
+	}
+	return nil
+}
+
 // Start listening on messages from server.
 func (c *Client) read(conn net.Conn) {
 	reader := bufio.NewReader(conn)
@@ -108,12 +174,9 @@ func (c *Client) read(conn net.Conn) {
 	for {
 		code, err := reader.Peek(1)
 		if err == io.EOF {
-			log.Println("Server disconnected")
 			return
-		} else if err == io.EOF {
-			log.Fatalln("Server disconnected")
 		}
-		log.Printf("Message code:%d", code[0])
+		// log.Printf("Message code:%d", code[0])
 		// Check message code
 		switch code[0] {
 		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode:
@@ -143,7 +206,8 @@ func (c *Client) read(conn net.Conn) {
 				menu_data.Reset()
 				// Make new menu available to system.
 				c.addMenu(menu)
-				log.Printf("Menu from server:%v", menu)
+				// Notify system that a new menu has arrived.
+				c.menuReadyChan <- struct{}{}
 			} else {
 				menu_data.Write(menu_buffer[1:size])
 			}
@@ -155,16 +219,13 @@ func (c *Client) read(conn net.Conn) {
 
 func (c *Client) write(conn net.Conn) {
 	for {
-		switch <-c.inputCh {
-		case "send":
-			msg := &Protocol.Message{Code: Protocol.Balancecode, Payload: 3}
-			log.Printf("About to send this message:%v", msg)
-			if err := binary.Write(conn, binary.LittleEndian, msg); err != nil {
+		select {
+		case message := <-c.writeCh:
+			log.Printf("About to send this message:%v", message)
+			if err := binary.Write(conn, binary.LittleEndian, message); err != nil {
 				log.Println(err)
 				return
 			}
-		default:
-			log.Println("Unknown command")
 		}
 	}
 }
@@ -175,17 +236,3 @@ func (c *Client) addMenu(menu *Protocol.MenuData) {
 	defer c.mutex.Unlock()
 	c.menu = menu
 }
-
-// func (c *Client) loadMenuFromFile() error {
-// 	data, err := ioutil.ReadFile("menu.json")
-// 	if err != nil {
-// 		return err
-// 	}
-// 	menu := new(Protocol.MenuData)
-// 	err = json.Unmarshal(data, menu)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	c.addMenu(menu)
-// 	return nil
-// }
