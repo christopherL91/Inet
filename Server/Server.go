@@ -25,17 +25,23 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"database/sql"
 	"encoding/binary"
 	"flag"
-	"github.com/christopherL91/Progp-Inet/Protocol"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/christopherL91/Progp-Inet/Protocol"
+	_ "github.com/lib/pq"
 )
 
 type (
@@ -44,26 +50,27 @@ type (
 		mutex *sync.Mutex
 		// Only a list of connections, the key is nothing.
 		connections map[net.Conn]struct{}
-		// Connection => cardnumber
-		clients map[net.Conn]int64
-		// Channel for sending messages through
-		messageCh chan *Protocol.Message
-		// Channel for sending menus through
-		menuCh chan *Protocol.Menu
 		// Channel for commands from user (stdin)
 		inputCh chan string
 	}
 )
 
 var (
-	base string
-	port string
+	base    string
+	port    string
+	timeout = 15 * time.Minute
+	db      = new(sql.DB)
 )
 
 func init() {
+	var err error
 	flag.StringVar(&base, "address", "localhost", "The base address to start the server on")
 	flag.StringVar(&port, "port", "3000", "The port to start the server on")
 	flag.Parse()
+	db, err = sql.Open("postgres", "user=christopher dbname=inet sslmode=disable")
+	if err != nil {
+		panic(err)
+	}
 	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
@@ -71,23 +78,16 @@ func newServer() *Server {
 	return &Server{
 		mutex:       new(sync.Mutex),
 		connections: make(map[net.Conn]struct{}),
-		clients:     make(map[net.Conn]int64),
-		menuCh:      make(chan *Protocol.Menu, 10),
-		messageCh:   make(chan *Protocol.Message, 10),
-		inputCh:     make(chan string, 10),
+		inputCh:     make(chan string, 100),
 	}
 }
 
-// Starts the actual server services.
-func (s *Server) start() {
-	go s.distributor()
-	go s.readInput()
-}
-
 func main() {
+	c := make(chan os.Signal)      //A channel to listen on keyboard events.
+	signal.Notify(c, os.Interrupt) //If user pressed CTRL - C.
 	server := newServer()
-	go server.start()
-	// base:port
+	go server.cleanUp(c)
+	// Base:Port
 	address := net.JoinHostPort(base, port)
 	// Start listening on address.
 	l, err := net.Listen("tcp", address)
@@ -109,42 +109,16 @@ func main() {
 
 // Take care of the client.
 func (s *Server) clientHandler(conn net.Conn) {
-	defer s.removeConnection(conn)
-	defer conn.Close()
-	go s.write(conn)
-	//send all the menus right now.
-	s.inputCh <- "menu"
-	// Read is blocking until client disconnects.
-	s.read(conn)
-	log.Printf("Client with IP %s disconnected", conn.RemoteAddr().String())
-}
-
-// This function distributes all the messages/menus to the clients
-func (s *Server) distributor() {
-	for {
-		select {
-		case message := <-s.messageCh:
-			log.Println(message)
-			s.mutex.Lock()
-			for conn, _ := range s.connections {
-				if err := binary.Write(conn, binary.LittleEndian, message); err != nil {
-					log.Println(err)
-					return
-				}
-			}
-			s.mutex.Unlock()
-		case menu := <-s.menuCh: // Distribute the 10 bytes to all the connections.
-			log.Println(menu)
-			s.mutex.Lock()
-			for conn, _ := range s.connections {
-				if err := binary.Write(conn, binary.LittleEndian, menu); err != nil {
-					log.Println(err)
-					return
-				}
-			}
-			s.mutex.Unlock()
-		}
-	}
+	writeCh := make(chan *Protocol.Message, 10)
+	menuCh := make(chan *Protocol.Menu)
+	defer func() {
+		s.removeConnection(conn)
+		conn.Close()
+		log.Printf("Client with IP %s disconnected", conn.RemoteAddr().String())
+	}()
+	log.Printf("Client with IP %s connected", conn.RemoteAddr().String())
+	go s.write(conn, writeCh, menuCh)
+	s.read(conn, writeCh, menuCh)
 }
 
 // Remove disconnecting user.
@@ -179,39 +153,69 @@ func (s *Server) readInput() {
 	}
 }
 
-func (s *Server) read(conn net.Conn) {
+func (s *Server) read(conn net.Conn, writeCh chan<- *Protocol.Message, menuCh chan<- *Protocol.Menu) {
+	conn.SetReadDeadline(time.Now().Add(timeout))
 	reader := bufio.NewReader(conn)
 	for {
 		code, err := reader.Peek(1)
-		if err == io.EOF {
-			return
+		if err != nil {
+			switch err := err.(type) {
+			case net.Error:
+				if err.Timeout() {
+					fmt.Printf("Client with ip %s disconnected due to timeout", conn.RemoteAddr().String())
+					return
+				}
+			default:
+				return // Client disconnected
+			}
 		}
 		log.Printf("Message code:%d", code[0])
+		// Extend read deadline
+		conn.SetReadDeadline(time.Now().Add(timeout))
 		// Check message code
 		switch code[0] {
-		case Protocol.Balancecode, Protocol.Depositcode, Protocol.Withdrawcode, Protocol.LoginCode:
+
+		case Protocol.Balancecode:
+			fmt.Println("client sent balance code")
 			message := new(Protocol.Message)
-			err := binary.Read(reader, binary.LittleEndian, message)
+			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+
+			var balance uint32
+			err = db.QueryRow(`SELECT SUM(money) FROM transactions WHERE
+				user_id=(SELECT id FROM users WHERE cardnumber='1234')`).Scan(&balance)
 			if err != nil {
 				log.Println(err)
 				return
 			}
-			log.Printf("Message from client:%v", message)
-		default:
-			log.Println("Something else")
-		}
-	}
-}
+			writeCh <- &Protocol.Message{Code: Protocol.Balancecode, Payload: balance}
 
-func (s *Server) write(conn net.Conn) {
-	for {
-		switch <-s.inputCh {
-		case "message":
-			log.Println("Sending message to clients")
-			message := &Protocol.Message{Code: Protocol.Balancecode, Payload: 2}
-			s.messageCh <- message
-		case "menu":
-			log.Println("Sending menu to clients")
+		case Protocol.Withdrawcode:
+			fmt.Println("Got withdraw code")
+			message := new(Protocol.Message)
+			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+
+		case Protocol.Depositcode:
+			fmt.Println("Got deposit code")
+			message := new(Protocol.Message)
+			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+
+		case Protocol.RequestMenucode:
+			fmt.Println("client requested menu")
+			message := new(Protocol.Message)
+			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+			// Read whole file.
 			file, err := ioutil.ReadFile("menu.json")
 			if err != nil {
 				panic(err)
@@ -226,16 +230,70 @@ func (s *Server) write(conn net.Conn) {
 				_, err := json_data.Read(buffer)
 				if err == io.EOF {
 					break
+				} else {
+					// Create a fixed slice for the message.
+					var fixed_slice [9]byte
+					// Copy content to fixed_slice
+					copy(fixed_slice[:], buffer)
+					menuCh <- &Protocol.Menu{Code: Protocol.Menucode, Payload: fixed_slice}
 				}
-				// Create a fixed slice for the message.
-				var fixed_slice [9]byte
-				// Copy content to fixed_slice
-				copy(fixed_slice[:], buffer)
-				// Send menu to distributor
-				s.menuCh <- &Protocol.Menu{Code: Protocol.Menucode, Payload: fixed_slice}
 			}
+
+		case Protocol.LoginCode:
+			fmt.Println("Client wants to login")
+			message := new(Protocol.Message)
+			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+			log.Println(message)
+			// Check in db
+			if message.Number == 1234 && message.Payload == 12 {
+				writeCh <- &Protocol.Message{Code: Protocol.LoginResponseOK}
+			} else {
+				writeCh <- &Protocol.Message{Code: Protocol.LoginResponseError}
+			}
+
 		default:
-			log.Println("Unknown command")
+			log.Println("Something else")
 		}
 	}
+}
+
+func (s *Server) write(conn net.Conn, writeCh <-chan *Protocol.Message, menuCh <-chan *Protocol.Menu) {
+	for {
+		select {
+		case message := <-writeCh:
+			fmt.Println("sending message to client", message)
+			if err := binary.Write(conn, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+		case menu_slice := <-menuCh:
+			fmt.Println("sending menu chunk to client ", menu_slice)
+			if err := binary.Write(conn, binary.LittleEndian, menu_slice); err != nil {
+				log.Println(err)
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) cleanUp(c chan os.Signal) {
+	<-c
+	fmt.Println("\nClosing every client connection...")
+	defer db.Close()
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for conn, _ := range s.connections {
+		if conn == nil {
+			continue
+		}
+		err := conn.Close()
+		if err != nil {
+			continue
+		}
+	}
+	fmt.Println("Server is now closing...")
+	os.Exit(1)
 }

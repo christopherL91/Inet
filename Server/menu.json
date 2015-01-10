@@ -1,26 +1,46 @@
 {
 	"version":"1.0",
 	"languages": [
-		"swedish",
+		"svenska",
 		"english"
 	],
 	"text": {
-		"swedish": {
+		"svenska": {
 			"title": "GoBank, banken för dig med go",
 			"banner": "Just nu 20% lägre ränta vid ditt första lån",
+			"interactions": {
+				"input_cardnumber":"Vänligen tryck in kortnummer",
+				"input_password":"Vänligen tryck in ditt lösen"
+			},
 			"initial_commands": {
 				"balance":"Kontrollera saldo",
-				"widthdraw":"Ta ut pengar",
+				"withdraw":"Ta ut pengar",
 				"deposit":"Stoppa in pengar"
+			},
+			"errors": {
+				"login_error":"Felaktiga inloggningsuppgifter, försök igen.",
+				"invalid_command":"Felaktig inmatning",
+				"invalid_language":"Felaktig språk",
+				"server_disconnected":"Uppkopplingen till servern bröts"
 			}
 		},
 		"english": {
-			"title": "GoBank",
-			"banner": "something...",
+			"title": "GoBank. A bank for gophers.",
+			"banner": "Now a free ifruit when signing up",
+			"interactions": {
+				"input_cardnumber":"Please input your cardnumber",
+				"input_password":"Please input your password"
+			},
 			"initial_commands": {
 				"balance": "Check balance",
-				"widthdraw": "Widthdraw",
+				"withdraw": "Withdraw",
 				"deposit": "deposit"
+			},
+			"errors" : {
+				"login_error":"Invalid credentials, please try again",
+				"invalid_command":"Invalid command",
+				"invalid_language":"Invalid language",
+				"server_disconnected":"Server disconnected"
 			}
 		}
 	}
