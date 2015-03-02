@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,7 @@ func init() {
 
 func newServer() *Server {
 	return &Server{
-		mutex:       new(sync.Mutex),
+		mutex:       &sync.Mutex{},
 		connections: make(map[net.Conn]struct{}),
 		inputCh:     make(chan string, 100),
 	}
@@ -87,6 +88,7 @@ func main() {
 	signal.Notify(c, os.Interrupt) //If user pressed CTRL - C.
 	server := newServer()
 	go server.cleanUp(c)
+	go server.readInput() // Listen on keyboard events.
 	// Base:Port
 	address := net.JoinHostPort(base, port)
 	// Start listening on address.
@@ -139,6 +141,7 @@ func (s *Server) addConnection(conn net.Conn) {
 
 // Read input from command line
 func (s *Server) readInput() {
+	go s.inputCommand()
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		line, err := reader.ReadString('\n')
@@ -156,60 +159,131 @@ func (s *Server) readInput() {
 func (s *Server) read(conn net.Conn, writeCh chan<- *Protocol.Message, menuCh chan<- *Protocol.Menu) {
 	conn.SetReadDeadline(time.Now().Add(timeout))
 	reader := bufio.NewReader(conn)
+	loggedin := false
+	var cardnumber string
 	for {
 		code, err := reader.Peek(1)
 		if err != nil {
 			switch err := err.(type) {
 			case net.Error:
 				if err.Timeout() {
-					fmt.Printf("Client with ip %s disconnected due to timeout", conn.RemoteAddr().String())
+					fmt.Printf("Client with ip %s disconnected due to timeout\n", conn.RemoteAddr().String())
 					return
 				}
 			default:
 				return // Client disconnected
 			}
 		}
-		log.Printf("Message code:%d", code[0])
+		// log.Printf("Message code:%d", code[0])
 		// Extend read deadline
 		conn.SetReadDeadline(time.Now().Add(timeout))
 		// Check message code
 		switch code[0] {
 
 		case Protocol.Balancecode:
-			fmt.Println("client sent balance code")
+			// fmt.Println("client sent balance code")
 			message := new(Protocol.Message)
 			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
 				log.Println(err)
 				return
 			}
-
-			var balance uint32
-			err = db.QueryRow(`SELECT SUM(money) FROM transactions WHERE
-				user_id=(SELECT id FROM users WHERE cardnumber='1234')`).Scan(&balance)
-			if err != nil {
-				log.Println(err)
-				return
+			if loggedin {
+				var balance uint32
+				err := db.QueryRow(
+					`select sum(transactions.money)
+					from transactions
+					inner join users on (transactions.user_id = users.id)
+					where users.cardnumber = $1`, cardnumber).Scan(&balance)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				writeCh <- &Protocol.Message{Code: Protocol.BalanceResponseCode, Payload: balance}
+			} else {
+				writeCh <- &Protocol.Message{Code: Protocol.BalanceResponseErrorCode}
+				continue
 			}
-			writeCh <- &Protocol.Message{Code: Protocol.Balancecode, Payload: balance}
 
 		case Protocol.Withdrawcode:
-			fmt.Println("Got withdraw code")
+			// fmt.Println("Got withdraw code")
 			message := new(Protocol.Message)
 			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
 				log.Println(err)
 				return
+			}
+			if loggedin {
+				// Check if scratch pin is correct
+				if message.Number%2 != 0 {
+					writeCh <- &Protocol.Message{Code: Protocol.WithdrawResponseErrorCode}
+					continue
+				}
+
+				var balance uint32
+				err := db.QueryRow(
+					`select sum(transactions.money)
+					from transactions
+					inner join users on (transactions.user_id = users.id)
+					where users.cardnumber = $1`, cardnumber).Scan(&balance)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				withdraw := -int64(message.Payload)
+				current := int64(balance) + withdraw
+				if current >= 0 {
+					_, err := db.Exec(
+						`insert into transactions(transaction_id,money,user_id)
+						select uuid_generate_v4(),$2, id from users where cardnumber = $1`, cardnumber, withdraw)
+					if err != nil {
+						log.Println(err)
+						return
+					}
+					writeCh <- &Protocol.Message{Code: Protocol.WithdrawResponseCode, Payload: uint32(current)}
+				} else {
+					// Not enough balance
+					writeCh <- &Protocol.Message{Code: Protocol.WithdrawResponseErrorCode}
+					continue
+				}
+			} else {
+				writeCh <- &Protocol.Message{Code: Protocol.WithdrawResponseErrorCode}
+				continue
 			}
 
 		case Protocol.Depositcode:
-			fmt.Println("Got deposit code")
+			// fmt.Println("Got deposit code")
 			message := new(Protocol.Message)
 			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
 				log.Println(err)
 				return
 			}
+			if loggedin {
+				var balance uint32
+				err := db.QueryRow(
+					`select sum(transactions.money)
+					from transactions
+					inner join users on (transactions.user_id = users.id)
+					where users.cardnumber = $1`, cardnumber).Scan(&balance)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				deposit := int64(message.Payload)
+				current := int64(balance) + deposit
+				_, err = db.Exec(
+					`insert into transactions(transaction_id,money,user_id)
+						select uuid_generate_v4(),$2, id from users where cardnumber = $1`, cardnumber, deposit)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				writeCh <- &Protocol.Message{Code: Protocol.DepositResponseCode, Payload: uint32(current)}
+			} else {
+				writeCh <- &Protocol.Message{Code: Protocol.DepositResponseErrorCode}
+				continue
+			}
 
 		case Protocol.RequestMenucode:
-			fmt.Println("client requested menu")
+			// fmt.Println("client requested menu")
 			message := new(Protocol.Message)
 			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
 				log.Println(err)
@@ -239,23 +313,48 @@ func (s *Server) read(conn net.Conn, writeCh chan<- *Protocol.Message, menuCh ch
 				}
 			}
 
-		case Protocol.LoginCode:
-			fmt.Println("Client wants to login")
+		case Protocol.Logoutcode:
+			loggedin = false
 			message := new(Protocol.Message)
 			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
 				log.Println(err)
 				return
 			}
-			log.Println(message)
-			// Check in db
-			if message.Number == 1234 && message.Payload == 12 {
-				writeCh <- &Protocol.Message{Code: Protocol.LoginResponseOK}
+
+		case Protocol.LoginCode:
+			message := new(Protocol.Message)
+			if err := binary.Read(reader, binary.LittleEndian, message); err != nil {
+				log.Println(err)
+				return
+			}
+
+			if !loggedin {
+				// Check in db
+				var password string
+				card := strconv.Itoa(int(message.Number))
+				err := db.QueryRow(`select pass from users where cardnumber = $1`, card).Scan(&password)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				pass := strconv.Itoa(int(message.Payload))
+				if pass == password {
+					cardnumber = card
+					writeCh <- &Protocol.Message{Code: Protocol.LoginResponseOK}
+					loggedin = true
+				} else {
+					writeCh <- &Protocol.Message{Code: Protocol.LoginResponseError}
+					continue
+				}
 			} else {
+				// Already logged in
 				writeCh <- &Protocol.Message{Code: Protocol.LoginResponseError}
+				continue
 			}
 
 		default:
 			log.Println("Something else")
+			return // Client sent a strange message! Disconnect client.
 		}
 	}
 }
@@ -264,17 +363,37 @@ func (s *Server) write(conn net.Conn, writeCh <-chan *Protocol.Message, menuCh <
 	for {
 		select {
 		case message := <-writeCh:
-			fmt.Println("sending message to client", message)
+			// fmt.Println("sending message to client", message)
 			if err := binary.Write(conn, binary.LittleEndian, message); err != nil {
 				log.Println(err)
 				return
 			}
 		case menu_slice := <-menuCh:
-			fmt.Println("sending menu chunk to client ", menu_slice)
+			// fmt.Println("sending menu chunk to client ", menu_slice)
 			if err := binary.Write(conn, binary.LittleEndian, menu_slice); err != nil {
 				log.Println(err)
 				return
 			}
+		}
+	}
+}
+
+func (s *Server) inputCommand() {
+	new_menu_notification := &Protocol.Message{Code: Protocol.NewMenucode}
+	for {
+		switch <-s.inputCh {
+		case "menu":
+			// fmt.Println("New Menu")
+			s.mutex.Lock()
+			for conn := range s.connections {
+				if err := binary.Write(conn, binary.LittleEndian, new_menu_notification); err != nil {
+					log.Println(err)
+					return
+				}
+			}
+			s.mutex.Unlock()
+		default:
+			log.Println("Unknown command")
 		}
 	}
 }
@@ -285,7 +404,7 @@ func (s *Server) cleanUp(c chan os.Signal) {
 	defer db.Close()
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	for conn, _ := range s.connections {
+	for conn := range s.connections {
 		if conn == nil {
 			continue
 		}

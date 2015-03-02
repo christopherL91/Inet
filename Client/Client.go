@@ -30,7 +30,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -110,7 +109,7 @@ func main() {
 	go cleanUp(c, conn)
 
 	log.Printf("You are connected to the server at %s", address)
-	// Read from stdin all the time.
+	// Read from STDIN all the time.
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
@@ -128,14 +127,15 @@ func main() {
 }
 
 func (c *Client) handleUserInput() {
-	var counter int // To increment the menu options.
-	var menu Protocol.Language
 	<-c.menuReadyChan // Wait for menu data to come.
+	c.handleUser()
+}
 
+func (c *Client) handleUser() {
+	var menu Protocol.Language
 	//	Print out all the available languages
 	for _, language := range c.menu.Languages {
-		counter += 1
-		fmt.Printf("%d)%s\n", counter, language)
+		fmt.Println(language)
 	}
 
 	for {
@@ -160,6 +160,7 @@ func (c *Client) handleUserInput() {
 			fmt.Println("1)", menu.InitialCommands.Balance)
 			fmt.Println("2)", menu.InitialCommands.Deposit)
 			fmt.Println("3)", menu.InitialCommands.Widthdraw)
+			fmt.Println("4)", menu.InitialCommands.Logout)
 			break
 		}
 	}
@@ -167,6 +168,7 @@ func (c *Client) handleUserInput() {
 	// 	1) Kontrollera saldo
 	//  2) Stoppa in pengar
 	//  3) Ta ut pengar
+	//  4) Logga ut
 
 	for {
 		fmt.Print(prompt)
@@ -174,15 +176,56 @@ func (c *Client) handleUserInput() {
 		case "1":
 			c.writeCh <- &Protocol.Message{Code: Protocol.Balancecode}
 			response := <-c.balanceCh
-			fmt.Println(response)
+			switch response.Code {
+			case Protocol.BalanceResponseCode:
+				fmt.Printf("%s: %d\n", menu.Responses.Balance, response.Payload)
+			case Protocol.BalanceResponseErrorCode:
+				fmt.Println(menu.Errors.Balance)
+			}
+
 		case "2":
-			c.writeCh <- &Protocol.Message{Code: Protocol.Depositcode}
+			fmt.Print("=> ")
+			moneyString := <-c.inputCh
+			if !Protocol.MoneyTest.Match([]byte(moneyString)) {
+				fmt.Println(menu.Errors.Deposit)
+				continue
+			}
+			money, _ := strconv.ParseUint(moneyString, 10, 32)
+			c.writeCh <- &Protocol.Message{Code: Protocol.Depositcode, Payload: uint32(money)}
 			response := <-c.depositCh
-			fmt.Println(response)
+			switch response.Code {
+			case Protocol.DepositResponseCode:
+				fmt.Printf("%s: %d\n", menu.Responses.Deposit, response.Payload)
+			case Protocol.DepositResponseErrorCode:
+				fmt.Println(menu.Errors.Deposit)
+			}
+
 		case "3":
-			c.writeCh <- &Protocol.Message{Code: Protocol.Withdrawcode}
+			fmt.Print("=> ")
+			moneyString := <-c.inputCh
+			fmt.Print("PIN => ")
+			scratchPin := <-c.inputCh
+			if !Protocol.MoneyTest.Match([]byte(moneyString)) {
+				fmt.Println(menu.Errors.Invalid_command)
+				continue
+			} else if !Protocol.ScratchTest.Match([]byte(scratchPin)) {
+				fmt.Println(menu.Errors.Incorrect_Pin)
+				continue
+			}
+			money, _ := strconv.ParseUint(moneyString, 10, 32)
+			pin, _ := strconv.ParseUint(scratchPin, 10, 16)
+			c.writeCh <- &Protocol.Message{Code: Protocol.Withdrawcode, Number: uint16(pin), Payload: uint32(money)}
 			response := <-c.withdrawCh
-			fmt.Println(response)
+			switch response.Code {
+			case Protocol.WithdrawResponseCode:
+				fmt.Printf("%s: %d\n", menu.Responses.Withdraw, response.Payload)
+			case Protocol.WithdrawResponseErrorCode:
+				fmt.Println(menu.Errors.Withdraw)
+			}
+		case "4":
+			c.writeCh <- &Protocol.Message{Code: Protocol.Logoutcode}
+			c.handleUser()
+			return
 		default:
 			fmt.Println(menu.Errors.Invalid_command)
 		}
@@ -192,9 +235,9 @@ func (c *Client) handleUserInput() {
 // Start the basic client services.
 func (c *Client) start(conn net.Conn) {
 	defer conn.Close()
-	go c.handleUserInput()
 	go c.write(conn)
 	c.writeCh <- &Protocol.Message{Code: Protocol.RequestMenucode}
+	go c.handleUserInput()
 	c.read(conn)
 }
 
@@ -207,7 +250,7 @@ func (c *Client) login(menu *Protocol.Language) error {
 		fmt.Println(menu.Interactions.Password)
 		fmt.Print(prompt)
 		passNum = <-c.inputCh
-		if Protocol.CardnumberTest.MatchString(cardNum) && Protocol.PassnumberTest.MatchString(passNum) {
+		if Protocol.CardnumberTest.MatchString(cardNum) {
 			break
 		} else {
 			fmt.Println(menu.Errors.Login_error)
@@ -236,14 +279,17 @@ func (c *Client) read(conn net.Conn) {
 	var menu_data bytes.Buffer
 	for {
 		code, err := reader.Peek(1)
-		if err == io.EOF {
+		if err != nil {
 			return // Server disconnected
 		}
 		// log.Printf("Message code:%d", code[0])
 		// Check message code
 		switch code[0] {
 
-		case Protocol.Balancecode:
+		case Protocol.BalanceResponseErrorCode:
+			fallthrough
+
+		case Protocol.BalanceResponseCode:
 			message := new(Protocol.Message)
 			err := binary.Read(reader, binary.LittleEndian, message)
 			if err != nil {
@@ -252,26 +298,43 @@ func (c *Client) read(conn net.Conn) {
 			}
 			c.balanceCh <- message
 
-		case Protocol.Depositcode:
-			message := new(Protocol.Message)
-			err := binary.Read(reader, binary.LittleEndian, message)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			fmt.Println(message)
+		case Protocol.DepositResponseErrorCode:
+			fallthrough
 
-		case Protocol.Withdrawcode:
+		case Protocol.DepositResponseCode:
 			message := new(Protocol.Message)
 			err := binary.Read(reader, binary.LittleEndian, message)
 			if err != nil {
 				log.Println(err)
 				return
 			}
-			fmt.Println(message)
+			c.depositCh <- message
+
+		case Protocol.WithdrawResponseErrorCode:
+			fallthrough
+
+		case Protocol.WithdrawResponseCode:
+			message := new(Protocol.Message)
+			err := binary.Read(reader, binary.LittleEndian, message)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			c.withdrawCh <- message
+
+		case Protocol.NewMenucode:
+			message := new(Protocol.Message)
+			err := binary.Read(reader, binary.LittleEndian, message)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			c.writeCh <- &Protocol.Message{Code: Protocol.RequestMenucode}
+			go func() {
+				<-c.menuReadyChan // Wait for menu data to come.
+			}()
 
 		case Protocol.Menucode:
-			// fmt.Println("incoming menu data from server")
 			menu_buffer := make([]byte, 10)
 			size, _ := reader.Read(menu_buffer)
 			menu := new(Protocol.MenuData)
@@ -296,13 +359,13 @@ func (c *Client) read(conn net.Conn) {
 				menu_data.Write(menu_buffer[1:size])
 			}
 
-		case Protocol.LoginResponseOK:
-			reader.Read(make([]byte, 10))
-			c.loginCh <- &Protocol.Message{Code: Protocol.LoginResponseOK}
-
 		case Protocol.LoginResponseError:
 			reader.Read(make([]byte, 10))
 			c.loginCh <- &Protocol.Message{Code: Protocol.LoginResponseError}
+
+		case Protocol.LoginResponseOK:
+			reader.Read(make([]byte, 10))
+			c.loginCh <- &Protocol.Message{Code: Protocol.LoginResponseOK}
 
 		default:
 			log.Println("Unknown message code")

@@ -12,16 +12,26 @@
 				"input_cardnumber":"Vänligen tryck in kortnummer",
 				"input_password":"Vänligen tryck in ditt lösen"
 			},
+			"responses": {
+				"balance":"Ditt saldo",
+				"deposit":"Nuvarande saldo",
+				"withdraw":"Nuvarande saldo efter uttag"
+			},
 			"initial_commands": {
 				"balance":"Kontrollera saldo",
 				"withdraw":"Ta ut pengar",
-				"deposit":"Stoppa in pengar"
+				"deposit":"Stoppa in pengar",
+				"logout":"Logga ut"
 			},
 			"errors": {
+				"balance": "Kunde inte hämta aktuellt saldo.",
+				"deposit": "Kunde inte föra över pengar",
+				"withdraw": "Kunde inte ta ut aktuellt belopp",
 				"login_error":"Felaktiga inloggningsuppgifter, försök igen.",
 				"invalid_command":"Felaktig inmatning",
 				"invalid_language":"Felaktig språk",
-				"server_disconnected":"Uppkopplingen till servern bröts"
+				"server_disconnected":"Uppkopplingen till servern bröts",
+				"incorrect_pin": "Felaktig pin"
 			}
 		},
 		"english": {
@@ -31,16 +41,26 @@
 				"input_cardnumber":"Please input your cardnumber",
 				"input_password":"Please input your password"
 			},
+			"responses": {
+				"balance":"Your balance",
+				"deposit":"Current balance",
+				"withdraw":"Current balance after withdraw"
+			},
 			"initial_commands": {
 				"balance": "Check balance",
 				"withdraw": "Withdraw",
-				"deposit": "deposit"
+				"deposit": "Deposit",
+				"logout":"Log out"
 			},
 			"errors" : {
+				"balance": "Failed to get current balance.",
+				"deposit": "Could not deposit money",
+				"withdraw": "Could not withdraw",
 				"login_error":"Invalid credentials, please try again",
 				"invalid_command":"Invalid command",
 				"invalid_language":"Invalid language",
-				"server_disconnected":"Server disconnected"
+				"server_disconnected":"Server disconnected",
+				"incorrect_pin": "Invalid pin"
 			}
 		}
 	}
